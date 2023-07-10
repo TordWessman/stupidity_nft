@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Stupidity Meter</title>
+
+<script id="fxhash-snippet">
+  //---- do not edit the following code (you can indent as you wish)
+  let alphabet = "123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
+  var fxhash = "oo" + Array(49).fill(0).map(_=>alphabet[(Math.random()*alphabet.length)|0]).join('')
+  let b58dec = str=>[...str].reduce((p,c)=>p*alphabet.length+alphabet.indexOf(c)|0, 0)
+  let fxhashTrunc = fxhash.slice(2)
+  let regex = new RegExp(".{" + ((fxhashTrunc.length/4)|0) + "}", 'g')
+  let hashes = fxhashTrunc.match(regex).map(h => b58dec(h))
+  let sfc32 = (a, b, c, d) => {
+    return () => {
+      a |= 0; b |= 0; c |= 0; d |= 0
+      var t = (a + b | 0) + d | 0
+      d = d + 1 | 0
+      a = b ^ b >>> 9
+      b = c + (c << 3) | 0
+      c = c << 21 | c >>> 11
+      c = c + t | 0
+      return (t >>> 0) / 4294967296
+    }
+  }
+  var fxrand = sfc32(...hashes)
+  // true if preview mode active, false otherwise
+  // you can append preview=1 to the URL to simulate preview active
+  var isFxpreview = new URLSearchParams(window.location.search).get('preview') === "1"
+  // call this method to trigger the preview
+  function fxpreview() {
+    console.log("fxhash: TRIGGER PREVIEW")
+  }
+  //---- /do not edit the following code
+</script>
+<script>
+const RANDOM_SEED = fxrand()
+const N_FACTOR = Math.pow(2.0, 1/12), BASE_A_FREQUENCY = 55.00
+const NOTE_DISTANCES = [3,2,3,2,2], DURATIONS = [1, 2, 4, 8], LETTERS = ["A", "C", "D", "F", "G"]
+const TONE_COUNT = 30, NOTE_SPREAD = 8, LOOP_LENGTH = 2 * Math.min(DURATIONS)
+const SOUND_SINE = Symbol("sine_wave"), SOUND_TAN = Symbol("tan_wave")
+
+var audioContext = null, tones = [], song = null
+
+var _x_random_seed = RANDOM_SEED
+
+function random(count) {
+    const x = Math.sin(_x_random_seed++) * 10000
+    return Math.floor((x - Math.floor(x)) * count)
+}
+
+class Config {}; Config.speed = 1.0; Config.volume = 0.5; Config.darkMode = ((RANDOM_SEED * 10 | 0) % 2 == 0)
+class Tone { constructor(order, freq, letter) { this.order = order; this.freq = freq; this.letter = letter } }
+class Note {
+    constructor(tone, duration, volume) { this.tone = tone;  this.duration = duration; this.volume = volume }
+    toBuffer(speed, sound) {
+        var buff = []
+        const sampleCount = audioContext.sampleRate * (speed / this.duration)
+        for (var i = 0; i < sampleCount; i++) { buff[i] = this.wave(sound, i, this.tone.freq) * this.volume * Config.volume; }
+        return buff
+    }
+    wave(sound, sampleNumber, freq) {
+        if (sound == SOUND_SINE) { return Math.sin(sampleNumber / ((audioContext.sampleRate / freq) / (Math.PI * 2.0)))      
+        } else { return Math.tan(sampleNumber / ((audioContext.sampleRate / freq) / (Math.PI * 2.0))) } 
+    }
+}
+class Loop {
+    constructor(sound) { this.sound = sound; this.notes = [] }
+    add(note) {  this.notes.push(note) }
+    duration() { var duration = 0; this.notes.forEach(n => duration += n.duration); return duration }
+    toBuffer(speed) { var buff = []; this.notes.forEach(n => buff = buff.concat(n.toBuffer(speed, this.sound))); return buff }
+}
+class Song {
+    constructor(trackCount, speed) { this.tracks = new Array(trackCount); this.speed = speed; for(var i = 0; i < trackCount; i++) { this.tracks[i] = [] }; this.audioSources = []; this.isPlaying = false }
+    add(loop, track) { this.tracks[track].push(loop) }
+    play() { this.tracks.forEach( track => this.playTrack(track)); this.isPlaying = true }
+    stop() { this.audioSources.forEach( source => source.stop() ); this.isPlaying = false }
+    playTrack(track) { var buff = []; track.forEach(n => buff = buff.concat(n.toBuffer(this.speed))); this.audioSources.push(this.playBuffer(buff)) }
+    playBuffer(buff) {
+        var float32Buffer = new Float32Array(buff.length), source = audioContext.createBufferSource()
+        for(var i = 0; i < buff.length; i++) { float32Buffer[i] = buff[i] }
+        var audioBuffer = audioContext.createBuffer(1, float32Buffer.length, audioContext.sampleRate)
+        audioBuffer.copyToChannel(float32Buffer, 0)
+        source.buffer = audioBuffer
+        source.connect(audioContext.destination)
+        source.loop = true
+        source.start()
+        return source
+    }
+}
+
+function setUpAudioContext() {    
+    window.AudioContext = window.AudioContext || window.webkitAudioContext
+    audioContext = new AudioContext()
+}
+
+function createTones(freq = BASE_A_FREQUENCY) {
+    for(var i = 0; i < TONE_COUNT; i++) {
+        var tone = new Tone(i, freq, LETTERS[i % NOTE_DISTANCES.length])
+        freq *= Math.pow(N_FACTOR, NOTE_DISTANCES[i % NOTE_DISTANCES.length])
+        tones[i] = tone
+    }
+}
+
+function nextToneFor(tone, lowerBound = 0, upperBound = TONE_COUNT - 1, noteSpread = NOTE_SPREAD) {
+    var order = 0
+    if (tone == null) { order = lowerBound + random(upperBound - lowerBound) } 
+    else {
+        const random_tone = random(noteSpread + 1)
+        order = tone.order - Math.floor(noteSpread / 2) + random_tone
+        if (order < lowerBound) { order = lowerBound + random_tone }
+        if (order > upperBound) { order = upperBound - random_tone }
+    }
+    return tones[order]    
+}
+
+function createLoop(sound, lowerBound = 0, upperBound = TONE_COUNT - 1, volume = 1.0, loop_length = LOOP_LENGTH) {
+    var tone = null, loop = new Loop(sound)
+    for(var i = 0; i < 20; i++) {
+        tone = nextToneFor(tone, lowerBound, upperBound)
+        var duration = DURATIONS[random(DURATIONS.length)]
+        if (duration + loop.duration() > loop_length) { duration = loop_length - loop.duration() }
+        noteVolume = volume * (1.2 - tone.freq / tones[TONE_COUNT-1].freq)
+        loop.add(new Note(tone, duration, noteVolume))
+    } 
+    return loop
+}
+
+function createSong() {
+    var x_base = createLoop(SOUND_SINE, 0, TONE_COUNT / 2), x_base2 = createLoop(SOUND_SINE, 0, TONE_COUNT / 2)
+    var x_melody = createLoop(SOUND_SINE, TONE_COUNT / 2, TONE_COUNT - 1, 0.2), x_melody2 = createLoop(SOUND_SINE, TONE_COUNT / 2, TONE_COUNT - 1, 0.2)
+    var x_crazy = createLoop(SOUND_SINE, Math.floor(TONE_COUNT / 4), Math.floor(TONE_COUNT - (TONE_COUNT / 4) - 1), 0.2)
+    var newSong = new Song(3, Config.speed)
+    newSong.add(x_base, 0); newSong.add(x_base2, 0)
+    newSong.add(x_melody, 1); newSong.add(x_melody2, 1)
+    newSong.add(x_crazy, 2); newSong.add(x_crazy, 2)
+    return newSong
+}
+
+function createAndPlayTheSongYo() { song = createSong(); song.play() }
+
+function doAudioShiet() {
+    if(audioContext == null) { setUpAudioContext() }
+    if(song == null) { 
+        song = new Song(0,1)
+        window.setTimeout(createAndPlayTheSongYo, 100)
+    }
+}
+
+createTones()
+
+function getSongName() {
+    const seed = random(1000)
+    if(seed % 17 == 0) { return "Iluvala Ilweran" }
+    if(seed % 13 == 0) { return "Harna Helcë" }
+    if(seed % 11 == 0) { return "Faila Fallë" }
+    if(seed % 7 == 0) { return "Endëa Emel" }
+    if(seed % 5 == 0) { return "Cantëa Carca" }
+    if(seed % 3 == 0) { return "Alahasta Alalbinóre" }
+    return "Bingo Bingo Bingo"
+}
+
+function getColorName() {
+    const seed = random(1000)
+    var adj = "Boring", noun = "Monday"
+    if(seed % 17 == 0) { adj = "Alluring" }  
+    else if(seed % 13 == 0) { adj = "Demented" }
+    else if(seed % 11 == 0) { adj = "Ominous" }
+    else if(seed % 7 == 0) { adj = "Iniquitous" }
+    else if(seed % 5 == 0) { adj = "Languorous" }
+    else if(seed % 3 == 0) { adj = "Queasy" }
+    
+    if(seed < 140) { noun = "Tuesday" }
+    else if(seed < 280) { noun = "Thursday" }
+    else if(seed < 420) { noun = "Friday" }
+    else if(seed < 580) { noun = "Wednesday" }
+    else if(seed < 720) { noun = "Sunday" }
+    else if(seed < 860) { noun = "Saturday" }
+    return adj + " " + noun
+}
+
+function getMousePos(canvas, event) {
+    var rect = canvas.getBoundingClientRect()
+    return new Point(event.clientX - rect.left, event.clientY - rect.top)
+}
+
+class Rect { constructor(x, y, width, height) { this.x = x; this.y = y; this.width = width; this.height = height; } }
+class Point { 
+    constructor(x, y) { this.x = x; this.y = y } 
+    inside(rect) { return this.x > rect.x && this.x < rect.x + rect.width && this.y < rect.y + rect.height && this.y > rect.y }
+}
+
+var iconAreas = []
+
+class Clickable {
+    constructor(frame, onClick = function() {} ) { this.frame = frame; iconAreas.push(frame); this.callback = null; this.onClick = onClick; this.eventListenersAdded = false }
+    draw(canvas) {
+        var self = this
+        if(!this.eventListenersAdded) {
+            canvas.addEventListener('click', function(evt) {
+                if(!displayingBluescreen && getMousePos(canvas, evt).inside(self.frame) && self.callback != null) { self.callback(self); self.onClick() }
+            }, false)
+            canvas.addEventListener('mousemove', function(evt) {
+                const mousePos = getMousePos(canvas, evt)
+                if (!displayingBluescreen && iconAreas.find(function(frame) { return mousePos.inside(frame) }) != null) {
+                    canvas.style.cursor = "pointer"   
+                } else { canvas.style.cursor = "" }
+                //if(getMousePos(canvas, evt).inside(self.frame)) { canvas.style.cursor = "pointer" } 
+                //else { canvas.style.cursor = "" }   
+            }, false)
+            this.eventListenersAdded = true
+        }   
+    }
+    clickListener(callback) { this.callback = callback }
+}
+
+function createColorArray(dark) {
+    const startColor = dark ? 0 : 128 + 32
+    return [startColor + random(96), startColor + random(96), startColor + random(96)]
+}
+
+Config.ForegroundColors = createColorArray(!Config.darkMode)
+Config.BackgroundColors = createColorArray(Config.darkMode)
+Config.ForegroundColor = "rgb(" + Config.ForegroundColors[0] + ", " + Config.ForegroundColors[1] + ", " + Config.ForegroundColors[2] + ")" 
+Config.BackgroundColor = "rgb(" + Config.BackgroundColors[0] + ", " + Config.BackgroundColors[1] + ", " + Config.BackgroundColors[2] + ")" 
+
+class Button extends Clickable { 
+    constructor(title, frame, size = 20, background = Config.BackgroundColor) { super(frame), this.title = title; this.size = size; this.background = background }
+    draw(canvas) {
+        super.draw(canvas)
+        var ctx = canvas.getContext("2d")
+        ctx.beginPath()
+        ctx.rect(this.frame.x + 1, this.frame.y + 1, this.frame.width - 2, this.frame.height - 2)
+        if(this.background != null) {
+            ctx.fillStyle = this.background
+            ctx.fill()   
+        }
+        ctx.stroke()
+        ctx.font = this.size + "px Courier"; ctx.fillStyle = Config.ForegroundColor; ctx.textAlign = "center"
+        ctx.fillText(this.title, this.frame.x + this.frame.width / 2 + 1, this.frame.y + this.frame.height / 2 + 6)
+    }
+}
+
+class SpeakerIcon extends Clickable {
+    constructor(frame) { super(frame); this.toggled = true }
+    draw(canvas) {
+        super.draw(canvas)
+        var ctx = canvas.getContext("2d")
+        ctx.fillStyle = this.toggled ? Config.ForegroundColor : "#CCCCCC"
+        ctx.strokeStyle = ctx.fillStyle
+        ctx.beginPath()
+        const arcSize = this.frame.width / 3
+        ctx.moveTo(this.frame.x + arcSize, this.frame.y)
+        ctx.lineTo(this.frame.x - arcSize + this.frame.width, this.frame.y + this.frame.height / 2)
+        ctx.lineTo(this.frame.x + arcSize, this.frame.y + this.frame.height)
+        ctx.lineTo(this.frame.x + arcSize, this.frame.y)
+        ctx.rect(this.frame.x + this.frame.width / 2, this.frame.y + this.frame.height / 4, this.frame.width / 2 - arcSize, this.frame.height / 2)
+        ctx.fill()
+        ctx.closePath()
+        ctx.beginPath(); ctx.arc(this.frame.x + arcSize, this.frame.y + this.frame.height / 2, arcSize / 2, Math.PI / 1.5, Math.PI * 2 - Math.PI / 1.5); ctx.stroke(); ctx.closePath()
+        ctx.beginPath(); ctx.arc(this.frame.x + arcSize * 1.2, this.frame.y + this.frame.height / 2, arcSize , Math.PI / 1.5, Math.PI * 2 - Math.PI / 1.5); ctx.stroke(); ctx.closePath()
+    }
+}
+
+class Label {
+    constructor(text, frame, size = 10, color = Config.ForegroundColor, background = Config.BackgroundColor, align = "center", verticalOffset = 5) { this.text = text; this.frame = frame; this.size = size; this.color = color; this.background = background; this.align = align; this.verticalOffset = verticalOffset }
+
+    draw(canvas) {
+        var ctx = canvas.getContext("2d")
+        ctx.beginPath()
+        if(this.background != null) {
+            ctx.fillStyle = this.background
+            ctx.rect(this.frame.x, this.frame.y, this.frame.width, this.frame.height)
+            ctx.fill()            
+        }
+        ctx.font = this.size + "px Courier"; ctx.fillStyle = this.color; ctx.textAlign = this.align
+        const lines = this.text.split('\n')
+        const h_space = this.align == "center" ? this.frame.width / 2 : 0
+        for(var i = 0; i < lines.length; i++) {
+            ctx.fillText(lines[i], this.frame.x + h_space, this.frame.y + this.frame.height / 2 + this.verticalOffset + this.size * i)    
+        }
+        
+    }
+}
+
+const WIDTH = 320, HEIGHT = 320, PADDING = 10, BUTTON_WIDTH = 120, BUTTON_HEIGHT = 40, LABEL_HEIGHT = 20, BAR_WIDTH = 20
+const button = new Button("CLICK", new Rect(WIDTH / 2 - BUTTON_WIDTH / 2, HEIGHT - BUTTON_HEIGHT - LABEL_HEIGHT, BUTTON_WIDTH, BUTTON_HEIGHT))
+const scoreLabel = new Label("", new Rect(WIDTH / 2 - BUTTON_WIDTH / 2, HEIGHT - LABEL_HEIGHT, BUTTON_WIDTH, LABEL_HEIGHT))
+const titleLabel = new Label("Stupidity Meter", new Rect(0, PADDING, WIDTH, LABEL_HEIGHT), 20, Config.ForegroundColors, null)
+const speaker = new SpeakerIcon(new Rect(PADDING, HEIGHT - BUTTON_HEIGHT - 15, 30, 30))
+const DAUB_COUNT = 800; var daub = []
+const PLAY_SOUND = false
+const MAX_SCORE = 10000
+const BLUESCREEN_INTERVAL = 100, BLUESCREEN_TTL = 5, WINDOWS_BUTTON_WIDTH = 60, BLUESCREEN_BACKGROUND = "rgb(0,0,170)"
+
+var score = 0, barHeight = 0, displayingBluescreen = false
+
+const bluescreenTextLabel = new Label("An error has occurred\n\nPress Enter to return to Windows, or Press\nCTRL+ALT+DEL to restart your computer.\n\nIf you do this, you will lose any unsaved\ninformation in all open applications.\n\nError: 0E : 016F BFF9B3D4", new Rect(PADDING * 2, 0, WIDTH - PADDING * 2, HEIGHT), 10, "white", null, "left")
+
+const bluescreenTitleLabel = new Label("Windows", new Rect(WIDTH / 2 - WINDOWS_BUTTON_WIDTH / 2, HEIGHT / 2 - PADDING * 2, WINDOWS_BUTTON_WIDTH, 10), 10, BLUESCREEN_BACKGROUND, "rgb(170,170,170)", "center", 3)
+
+for(var i = 0; i < DAUB_COUNT; i++) { daub[i] = [random(WIDTH), random(HEIGHT), random(WIDTH), random(HEIGHT)] }
+
+function drawScore(canvas) {
+    scoreLabel.text = "score: " + score; scoreLabel.draw(canvas)
+    var ctx = canvas.getContext("2d")
+    ctx.fillStyle = Config.ForegroundColor
+    ctx.fillRect(button.frame.x + button.frame.width / 2 - BAR_WIDTH / 2, button.frame.y - barHeight - PADDING, BAR_WIDTH, barHeight)   
+}
+
+function click(canvas) {
+    if(!displayingBluescreen) {
+        score += 1
+        barHeight += 1 - Math.min(0.99, barHeight / 100)
+        drawScore(canvas)   
+    }
+    if(score > MAX_SCORE) { drawBluescreen(canvas) }
+    else if(score % BLUESCREEN_INTERVAL == 0) { window.setTimeout(redraw, BLUESCREEN_TTL * 1000); drawBluescreen(canvas) }
+    doAudioShiet()
+}
+
+function drawBluescreen(canvas) {
+    var ctx = canvas.getContext("2d")
+    ctx.fillStyle = BLUESCREEN_BACKGROUND; ctx.rect(0, 0, canvas.width, canvas.height); ctx.fill() 
+    bluescreenTextLabel.draw(canvas)
+    bluescreenTitleLabel.draw(canvas)
+    displayingBluescreen = true
+}
+
+function redraw() {
+    canvas = document.getElementById("stupid_canvas")
+    displayingBluescreen = false
+    drawItems(canvas)
+    drawScore(canvas)
+}
+
+function getColorString(colorArray, alpha = 1) {
+    return "rgba(" + colorArray[0] + ", " + colorArray[1] + ", " + colorArray[2] + ", " + alpha + ")" 
+}
+function drawDaub(canvas) {
+    var ctx = canvas.getContext("2d")
+    ctx.strokeStyle = getColorString(Config.ForegroundColors, 0.1) 
+    ctx.lineWidth = 1
+    for(var i = 0; i < daub.length; i++) {
+        ctx.beginPath();
+        if(i < daub.length - 1) {  ctx.moveTo(daub[i + 1][2], daub[i + 1][3]) }
+        ctx.quadraticCurveTo(daub[i][0], daub[i][1], daub[i][2], daub[i][3])
+        ctx.stroke()
+    }
+}
+
+function drawItems(canvas) {
+    var ctx = canvas.getContext("2d")
+    ctx.fillStyle = Config.BackgroundColor
+    ctx.rect(0, 0, canvas.width, canvas.height)
+    ctx.fill() 
+    drawDaub(canvas)
+    speaker.draw(canvas)
+    button.draw(canvas)
+    scoreLabel.draw(canvas)
+    titleLabel.draw(canvas)
+}
+
+window.onload = function() {
+    var canvas = document.getElementById("stupid_canvas")
+    canvas.width = WIDTH
+    canvas.height = HEIGHT
+    canvas.style.background = Config.BackgroundColor
+    document.body.style.background = Config.BackgroundColor
+    drawItems(canvas)
+    button.clickListener(function(btn) { click(canvas) })
+    speaker.clickListener(function(spkr) {   
+        if(song == null) { return doAudioShiet() }
+        else { spkr.toggled = !spkr.toggled; spkr.draw(canvas) }
+        if(spkr.toggled) { song.play() }
+        else { song.stop() }
+    })
+    canvas.style.filter = "drop-shadow(10px 10px 20px #000000AA)"
+    /*
+    var frame = document.getElementById("framex")
+    frame.style.background = getColorString(Config.ForegroundColors, 0.2) 
+    frame.style.width = (WIDTH + 32) + "px"
+    frame.style.height = (HEIGHT + 32) + "px" */
+    document.addEventListener('gesturestart', function (e) { e.preventDefault() })
+}
+
+const fgColorName = getColorName(), bgColorName = getColorName(), songName = getSongName()
+window.$fxhashFeatures = {
+    "Background" : bgColorName,
+    "Color" : fgColorName,
+    "Music" : songName,
+    "DarkMode": Config.darkMode
+}
+
+</script>
+<script id="fxhash-snippet">
+  //---- do not edit the following code (you can indent as you wish)
+  let alphabet = "123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
+  var fxhash = "oo" + Array(49).fill(0).map(_=>alphabet[(Math.random()*alphabet.length)|0]).join('')
+  let b58dec = str=>[...str].reduce((p,c)=>p*alphabet.length+alphabet.indexOf(c)|0, 0)
+  let fxhashTrunc = fxhash.slice(2)
+  let regex = new RegExp(".{" + ((fxhashTrunc.length/4)|0) + "}", 'g')
+  let hashes = fxhashTrunc.match(regex).map(h => b58dec(h))
+  let sfc32 = (a, b, c, d) => {
+    return () => {
+      a |= 0; b |= 0; c |= 0; d |= 0
+      var t = (a + b | 0) + d | 0
+      d = d + 1 | 0
+      a = b ^ b >>> 9
+      b = c + (c << 3) | 0
+      c = c << 21 | c >>> 11
+      c = c + t | 0
+      return (t >>> 0) / 4294967296
+    }
+  }
+  var fxrand = sfc32(...hashes)
+  // true if preview mode active, false otherwise
+  // you can append preview=1 to the URL to simulate preview active
+  var isFxpreview = new URLSearchParams(window.location.search).get('preview') === "1"
+  // call this method to trigger the preview
+  function fxpreview() {
+    console.log("fxhash: TRIGGER PREVIEW")
+  }
+  //---- /do not edit the following code
+</script>
+<meta name="viewport" content="width=device-width, user-scalable=no" />
+</head>
+<body>
+<canvas id="stupid_canvas" style="margin: 0; position: absolute; top: 50%; left: 50%; -ms-transform: translate(-50%, -50%); transform: translate(-50%, -50%);"/>
+</body>
+</html>
